@@ -1,8 +1,10 @@
 package com.sukisu.ultra.ui.screen
 
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -17,6 +19,7 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.Input
 import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.Security
@@ -205,6 +208,32 @@ fun InstallScreen(
         }
     }
 
+    val selectLkmLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        if (it.resultCode == Activity.RESULT_OK) {
+            it.data?.data?.let { uri ->
+                val isKo = isKoFile(context, uri)
+                if (isKo) {
+                    lkmSelection = LkmSelection.LkmUri(uri)
+                } else {
+                    lkmSelection = LkmSelection.KmiNone
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.install_only_support_ko_file),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            }
+        }
+    }
+
+    val onLkmUpload = {
+        selectLkmLauncher.launch(Intent(Intent.ACTION_GET_CONTENT).apply {
+            type = "application/octet-stream"
+        })
+    }
+
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior(rememberTopAppBarState())
 
     Scaffold(
@@ -250,32 +279,39 @@ fun InstallScreen(
                     .fillMaxWidth()
                     .padding(16.dp)
             ) {
-                (lkmSelection as? LkmSelection.LkmUri)?.let {
-                    ElevatedCard(
-                        colors = getCardColors(MaterialTheme.colorScheme.surfaceVariant),
-                        elevation = getCardElevation(),
+                ElevatedCard(
+                    colors = getCardColors(MaterialTheme.colorScheme.surfaceVariant),
+                    elevation = getCardElevation(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 12.dp),
+                ) {
+                    ListItem(
+                        headlineContent = {
+                            Text(stringResource(id = R.string.install_upload_lkm_file))
+                        },
+                        supportingContent = {
+                            (lkmSelection as? LkmSelection.LkmUri)?.let {
+                                Text(
+                                    stringResource(
+                                        id = R.string.selected_lkm,
+                                        it.uri.lastPathSegment ?: "(file)"
+                                    )
+                                )
+                            }
+                        },
+                        leadingContent = {
+                            Icon(
+                                Icons.AutoMirrored.Filled.Input,
+                                contentDescription = null
+                            )
+                        },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(bottom = 12.dp)
-                            .clip(MaterialTheme.shapes.medium)
-                            .shadow(
-                                elevation = cardElevation,
-                                shape = MaterialTheme.shapes.medium,
-                                spotColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)
-                            )
-                    ) {
-                        Text(
-                            text = stringResource(
-                                id = R.string.selected_lkm,
-                                it.uri.lastPathSegment ?: "(file)"
-                            ),
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier.padding(16.dp)
-                        )
-                    }
+                            .clickable { onLkmUpload() }
+                    )
                 }
-
-                (installMethod as? InstallMethod.HorizonKernel)?.let { method ->
+                    (installMethod as? InstallMethod.HorizonKernel)?.let { method ->
                     if (method.slot != null) {
                         ElevatedCard(
                             colors = getCardColors(MaterialTheme.colorScheme.surfaceVariant),
@@ -968,6 +1004,31 @@ private fun TopBar(
         ),
         scrollBehavior = scrollBehavior
     )
+}
+
+private fun isKoFile(context: Context, uri: Uri): Boolean {
+    val seg = uri.lastPathSegment ?: ""
+    if (seg.endsWith(".ko", ignoreCase = true)) return true
+
+    return try {
+        context.contentResolver.query(
+            uri,
+            arrayOf(OpenableColumns.DISPLAY_NAME),
+            null,
+            null,
+            null
+        )?.use { cursor ->
+            val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (idx != -1 && cursor.moveToFirst()) {
+                val name = cursor.getString(idx)
+                name?.endsWith(".ko", ignoreCase = true) == true
+            } else {
+                false
+            }
+        } ?: false
+    } catch (_: Throwable) {
+        false
+    }
 }
 
 @Preview

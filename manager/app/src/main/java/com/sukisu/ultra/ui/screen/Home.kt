@@ -157,6 +157,15 @@ fun HomeScreen(navigator: DestinationsNavigator) {
                             stringResource(id = R.string.grant_root_failed)
                         )
                     }
+
+                    // 只有在没有其他警告信息时才显示不兼容内核警告
+                    val shouldShowWarnings = viewModel.systemStatus.requireNewKernel ||
+                            (viewModel.systemStatus.ksuVersion != null && !viewModel.systemStatus.isRootAvailable)
+
+                    if (Natives.version <= Natives.MINIMAL_NEW_IOCTL_KERNEL && !shouldShowWarnings && viewModel.systemStatus.ksuVersion != null) {
+                        IncompatibleKernelCard()
+                        Spacer(Modifier.height(12.dp))
+                    }
                 }
 
                 // 更新检查
@@ -862,7 +871,7 @@ private fun StatusCardPreview() {
         StatusCard(
             HomeViewModel.SystemStatus(
                 isManager = true,
-                ksuVersion = 20000,
+                ksuVersion = 40000,
                 lkmMode = true,
                 kernelVersion = KernelVersion(5, 10, 101),
                 isRootAvailable = true
@@ -889,6 +898,23 @@ private fun StatusCardPreview() {
             )
         )
     }
+}
+
+@Composable
+private fun IncompatibleKernelCard() {
+    val currentKver = remember { Natives.version }
+    val threshold   = Natives.MINIMAL_NEW_IOCTL_KERNEL
+
+    val msg = stringResource(
+        id = R.string.incompatible_kernel_msg,
+        currentKver,
+        threshold
+    )
+
+    WarningCard(
+        message = msg,
+        color = MaterialTheme.colorScheme.error
+    )
 }
 
 @Preview

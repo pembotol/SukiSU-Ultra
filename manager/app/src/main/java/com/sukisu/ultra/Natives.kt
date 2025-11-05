@@ -16,22 +16,22 @@ object Natives {
     // 10946: add capabilities
     // 10977: change groups_count and groups to avoid overflow write
     // 11071: Fix the issue of failing to set a custom SELinux type.
-    const val MINIMAL_SUPPORTED_KERNEL = 11071
-    const val MINIMAL_SUPPORTED_KERNEL_FULL = "v3.1.8"
-
-    // 11640: Support query working mode, LKM or GKI
-    // when MINIMAL_SUPPORTED_KERNEL > 11640, we can remove this constant.
-    const val MINIMAL_SUPPORTED_KERNEL_LKM = 11648
+    // 12143: breaking: new supercall impl
+    const val MINIMAL_SUPPORTED_KERNEL = 12143
 
     // 12040: Support disable sucompat mode
     const val MINIMAL_SUPPORTED_SU_COMPAT = 12040
     const val KERNEL_SU_DOMAIN = "u:r:su:s0"
+
+    const val MINIMAL_SUPPORTED_KERNEL_FULL = "v3.1.8"
 
     const val MINIMAL_SUPPORTED_KPM = 12800
 
     const val MINIMAL_SUPPORTED_DYNAMIC_MANAGER = 13215
 
     const val MINIMAL_SUPPORTED_UID_SCANNER = 13347
+
+    const val MINIMAL_NEW_IOCTL_KERNEL = 13490
 
     const val ROOT_UID = 0
     const val ROOT_GID = 0
@@ -66,8 +66,6 @@ object Natives {
         System.loadLibrary("kernelsu")
     }
 
-    // become root manager, return true if success.
-    external fun becomeManager(pkg: String?): Boolean
     val version: Int
         external get
 
@@ -79,6 +77,9 @@ object Natives {
         external get
 
     val isLkmMode: Boolean
+        external get
+
+    val isManager: Boolean
         external get
 
     external fun uidShouldUmount(uid: Int): Boolean
@@ -99,6 +100,16 @@ object Natives {
      */
     external fun isSuEnabled(): Boolean
     external fun setSuEnabled(enabled: Boolean): Boolean
+
+    /**
+     * Kernel module umount can be disabled temporarily.
+     *  0: disabled
+     *  1: enabled
+     *  negative : error
+     */
+    external fun isKernelUmountEnabled(): Boolean
+    external fun setKernelUmountEnabled(enabled: Boolean): Boolean
+
     external fun isKPMEnabled(): Boolean
     external fun getHookType(): String
 
@@ -178,7 +189,7 @@ object Natives {
     }
 
     fun requireNewKernel(): Boolean {
-        if (version < MINIMAL_SUPPORTED_KERNEL) return true
+        if (version != -1 && version < MINIMAL_SUPPORTED_KERNEL) return true
         return isVersionLessThan(getFullVersion(), MINIMAL_SUPPORTED_KERNEL_FULL)
     }
 

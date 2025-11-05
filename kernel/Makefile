@@ -3,14 +3,20 @@ kernelsu-objs += allowlist.o
 kernelsu-objs += dynamic_manager.o
 kernelsu-objs += apk_sign.o
 kernelsu-objs += sucompat.o
+kernelsu-objs += pkg_observer.o
 kernelsu-objs += throne_tracker.o
 kernelsu-objs += core_hook.o
+kernelsu-objs += supercalls.o
+kernelsu-objs += feature.o
 kernelsu-objs += ksud.o
 kernelsu-objs += embed_ksud.o
 kernelsu-objs += kernel_compat.o
 kernelsu-objs += throne_comm.o
 kernelsu-objs += sulog.o
+kernelsu-objs += ksu_netlink.o
+
 ifeq ($(CONFIG_KSU_MANUAL_SU), y)
+ccflags-y += -DCONFIG_KSU_MANUAL_SU
 kernelsu-objs += manual_su.o
 endif
 
@@ -29,14 +35,26 @@ obj-$(CONFIG_KSU_TRACEPOINT_HOOK) += ksu_trace_export.o
 
 obj-$(CONFIG_KPM) += kpm/
 
+ifeq ($(CONFIG_KSU),m)
+ccflags-y += -DKSU_MODULE
+endif
+
 
 REPO_OWNER := SukiSU-Ultra
 REPO_NAME := SukiSU-Ultra
 REPO_BRANCH := main
-KSU_VERSION_API := 3.2.0
+KSU_VERSION_API := 4.0.0
 
 GIT_BIN := /usr/bin/env PATH="$$PATH":/usr/bin:/usr/local/bin git
 CURL_BIN := /usr/bin/env PATH="$$PATH":/usr/bin:/usr/local/bin curl
+
+KDIR := $(KDIR)
+MDIR := $(realpath $(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
+
+ifneq ($(KDIR),)
+$(info -- KDIR: $(KDIR))
+$(info -- MDIR: $(MDIR))
+endif
 
 KSU_GITHUB_VERSION := $(shell $(CURL_BIN) -s "https://api.github.com/repos/$(REPO_OWNER)/$(REPO_NAME)/releases/latest" | grep '"tag_name":' | sed -E 's/.*"v([^"]+)".*/\1/')
 KSU_GITHUB_VERSION_COMMIT := $(shell $(CURL_BIN) -sI "https://api.github.com/repos/$(REPO_OWNER)/$(REPO_NAME)/commits?sha=$(REPO_BRANCH)&per_page=1" | grep -i "link:" | sed -n 's/.*page=\([0-9]*\)>; rel="last".*/\1/p')
@@ -45,6 +63,10 @@ ifeq ($(findstring $(srctree),$(src)),$(srctree))
   KSU_SRC := $(src)
 else
   KSU_SRC := $(srctree)/$(src)
+endif
+
+ifneq ($(shell test -e $(KSU_SRC)/../.git && echo "in-tree"),in-tree)
+  KSU_SRC := $(MDIR)
 endif
 
 LOCAL_GIT_EXISTS := $(shell test -e $(KSU_SRC)/../.git && echo 1 || echo 0)
@@ -57,14 +79,14 @@ ifeq ($(KSU_GITHUB_VERSION_COMMIT),)
   ifeq ($(LOCAL_GIT_EXISTS),1)
     $(shell cd $(KSU_SRC); [ -f ../.git/shallow ] && $(GIT_BIN) fetch --unshallow)
     KSU_LOCAL_VERSION := $(shell cd $(KSU_SRC); $(GIT_BIN) rev-list --count $(REPO_BRANCH))
-    KSU_VERSION := $(shell expr 10000 + $(KSU_LOCAL_VERSION) + 700)
+    KSU_VERSION := $(shell expr 40000 + $(KSU_LOCAL_VERSION) - 2815)
     $(info -- $(REPO_NAME) version (local .git): $(KSU_VERSION))
   else
     KSU_VERSION := 13000
     $(warning -- Could not fetch version online or via local .git! Using fallback version: $(KSU_VERSION))
   endif
 else
-  KSU_VERSION := $(shell expr 10000 + $(KSU_GITHUB_VERSION_COMMIT) + 700)
+  KSU_VERSION := $(shell expr 40000 + $(KSU_GITHUB_VERSION_COMMIT) - 2815)
   $(info -- $(REPO_NAME) version (GitHub): $(KSU_VERSION))
 endif
 
@@ -103,14 +125,15 @@ ccflags-y += -DKSU_MANAGER_PACKAGE=\"$(KSU_MANAGER_PACKAGE)\"
 $(info -- SukiSU Manager package name: $(KSU_MANAGER_PACKAGE))
 endif
 
-$(info -- Supported Unofficial Manager: 5ec1cff (GKI) ShirkNeko udochina (GKI and KPM))
-
 ifeq ($(CONFIG_KSU_KPROBES_HOOK), y)
 $(info -- SukiSU: CONFIG_KSU_KPROBES_HOOK)
+ccflags-y += -DCONFIG_KSU_KPROBES_HOOK
 else ifeq ($(CONFIG_KSU_TRACEPOINT_HOOK), y)
 $(info -- SukiSU: CONFIG_KSU_TRACEPOINT_HOOK)
+ccflags-y += -DCONFIG_KSU_TRACEPOINT_HOOK
 else ifeq ($(CONFIG_KSU_MANUAL_HOOK), y)
 $(info -- SukiSU: CONFIG_KSU_MANUAL_HOOK)
+ccflags-y += -DCONFIG_KSU_MANUAL_HOOK
 endif
 
 KERNEL_VERSION := $(VERSION).$(PATCHLEVEL)
@@ -127,30 +150,30 @@ endif
 $(info -- KERNEL_VERSION: $(KERNEL_VERSION))
 $(info -- KERNEL_TYPE: $(KERNEL_TYPE))
 
-$(info -- KERNEL_VERSION: $(KERNEL_VERSION))
 ifeq ($(CONFIG_KPM), y)
 $(info -- KPM is enabled)
 else
 $(info -- KPM is disabled)
 endif
 
-ifeq ($(CONFIG_KSU_MANUAL_SU), y)
-KSU_PW_POOL := abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789
-KSU_PW_LEN  := $(shell awk 'BEGIN{srand(); print int(rand()*9)+8}')
-
-ifeq ($(CONFIG_KSU), m)
-KSU_SU_PASSWORD := CilloZako114514
-else
-KSU_SU_PASSWORD := $(shell \
-    tr -dc '$(KSU_PW_POOL)' </dev/urandom | head -c $(KSU_PW_LEN))
+# Check new vfs_getattr()
+ifeq ($(shell grep -A1 "^int vfs_getattr" $(srctree)/fs/stat.c | grep -q "query_flags" ; echo $$?),0)
+ccflags-y += -DKSU_HAS_NEW_VFS_GETATTR
 endif
 
-ccflags-y += -DKSU_SU_PASSWORD=\"$(KSU_SU_PASSWORD)\"
-
-$(info -- KSU manual-su password : $(KSU_SU_PASSWORD))
+# Function proc_ops check
+ifeq ($(shell grep -q "struct proc_ops " $(srctree)/include/linux/proc_fs.h; echo $$?),0)
+ccflags-y += -DKSU_COMPAT_HAS_PROC_OPS
 endif
 
 ccflags-y += -Wno-implicit-function-declaration -Wno-strict-prototypes -Wno-int-conversion -Wno-gcc-compat
-ccflags-y += -Wno-declaration-after-statement -Wno-unused-function
+ccflags-y += -Wno-declaration-after-statement -Wno-unused-function -Wno-unused-variable
+
+all:
+	make -C $(KDIR) M=$(MDIR) modules
+compdb:
+	python3 $(MDIR)/.vscode/generate_compdb.py -O $(KDIR) $(MDIR)
+clean:
+	make -C $(KDIR) M=$(MDIR) clean
 
 # Keep a new line here!! Because someone may append config

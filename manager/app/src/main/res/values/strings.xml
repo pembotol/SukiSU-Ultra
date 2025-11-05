@@ -112,6 +112,8 @@
     <string name="install_inactive_slot">Install to inactive slot (After OTA)</string>
     <string name="install_inactive_slot_warning">Your device will be **FORCED** to boot to the current inactive slot after a reboot!\nOnly use this option after OTA is done.\nContinue?</string>
     <string name="install_next">Next</string>
+    <string name="install_upload_lkm_file">Use local LKM file</string>
+    <string name="install_only_support_ko_file">Only .ko files are supported</string>
     <string name="select_file_tip">%1$s partition image is recommended</string>
     <string name="select_file_tip_vendor">(Unstable)</string>
     <string name="select_kmi">Select KMI</string>
@@ -166,6 +168,8 @@
     <string name="su_not_allowed">Granting superuser to %s is not allowed</string>
     <string name="settings_disable_su">Disable su compatibility</string>
     <string name="settings_disable_su_summary">Temporarily disable any applications from obtaining root privileges via the ⁠su command (Existing root processes will not be affected)</string>
+    <string name="settings_disable_kernel_umount">Disable kernel umount</string>
+    <string name="settings_disable_kernel_umount_summary">Temporarily disable kernel-level umount behavior controlled by KernelSU.</string>
     <string name="module_install_multiple_confirm_with_names">Sure you want to install the following %1$d modules? \n\n%2$s</string>
     <string name="more_settings">More settings</string>
     <string name="selinux">SELinux</string>
@@ -722,4 +726,10 @@ Important Note:\n
     <string name="log_viewer_too_many_logs">Too many logs, showing only the latest %1$d entries</string>
     <string name="log_viewer_load_more">Load More Logs</string>
     <string name="log_viewer_all_logs_loaded">All logs displayed</string>
+    <!-- MiUI Uninstall Desc -->
+    <string name="miui_uninstall_title">Confirm Uninstallation SukiSU Manager?</string>
+    <string name="miui_uninstall_content">Proceeding with the uninstallation will not affect the core functionality of your root access. The root is designed to operate independently of this manager.</string>
+    <string name="incompatible_kernel_msg">
+    The current manager is incompatible with this kernel! Please upgrade the kernel to version %2$d or higher (currently %1$d)
+    </string>
 </resources>
