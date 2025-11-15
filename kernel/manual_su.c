@@ -6,14 +6,14 @@
 #include <linux/uaccess.h>
 #include <linux/file.h>
 #include <linux/mm.h>
+#include <linux/slab.h>
 #include <linux/binfmts.h>
-#include "kernel_compat.h"
 #include "manual_su.h"
 #include "ksu.h"
 #include "allowlist.h"
 #include "manager.h"
+#include "app_profile.h"
 
-extern void escape_to_root_for_cmd_su(uid_t, pid_t);
 static bool current_verified = false;
 static void ksu_cleanup_expired_tokens(void);
 static bool is_current_verified(void);
@@ -227,7 +227,7 @@ static int handle_escalation_request(struct manual_su_request *request)
     }
     rcu_read_unlock();
     
-    if (current_uid().val == 0 || is_manager() || ksu_is_allow_uid(current_uid().val))
+    if (current_uid().val == 0 || is_manager() || ksu_is_allow_uid_for_current(current_uid().val))
         goto allowed;
 
     char *env_token = get_token_from_envp();
@@ -344,4 +344,13 @@ static void add_pending_root(uid_t uid)
     pending_uids[pending_cnt++] = (struct pending_uid){uid, 0};
     ksu_temp_grant_root_once(uid);
     pr_info("pending_root: cached UID %d\n", uid);
+}
+
+void ksu_try_escalate_for_uid(uid_t uid)
+{
+    if (!is_pending_root(uid))
+        return;
+    
+    pr_info("pending_root: UID=%d temporarily allowed\n", uid);
+    remove_pending_root(uid);
 }

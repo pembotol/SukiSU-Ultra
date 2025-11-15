@@ -1,27 +1,28 @@
 kernelsu-objs := ksu.o
 kernelsu-objs += allowlist.o
+kernelsu-objs += app_profile.o
 kernelsu-objs += dynamic_manager.o
 kernelsu-objs += apk_sign.o
 kernelsu-objs += sucompat.o
+kernelsu-objs += syscall_hook_manager.o
+kernelsu-objs += throne_tracker.o
 kernelsu-objs += pkg_observer.o
 kernelsu-objs += throne_tracker.o
-kernelsu-objs += core_hook.o
+kernelsu-objs += umount_manager.o
+kernelsu-objs += setuid_hook.o
+kernelsu-objs += kernel_umount.o
 kernelsu-objs += supercalls.o
 kernelsu-objs += feature.o
 kernelsu-objs += ksud.o
 kernelsu-objs += embed_ksud.o
-kernelsu-objs += kernel_compat.o
+kernelsu-objs += seccomp_cache.o
+kernelsu-objs += file_wrapper.o
 kernelsu-objs += throne_comm.o
 kernelsu-objs += sulog.o
-kernelsu-objs += ksu_netlink.o
 
 ifeq ($(CONFIG_KSU_MANUAL_SU), y)
 ccflags-y += -DCONFIG_KSU_MANUAL_SU
 kernelsu-objs += manual_su.o
-endif
-
-ifeq ($(CONFIG_KSU_TRACEPOINT_HOOK), y)
-kernelsu-objs += ksu_trace.o
 endif
 
 kernelsu-objs += selinux/selinux.o
@@ -31,14 +32,8 @@ ccflags-y += -I$(srctree)/security/selinux -I$(srctree)/security/selinux/include
 ccflags-y += -I$(objtree)/security/selinux -include $(srctree)/include/uapi/asm-generic/errno.h
 
 obj-$(CONFIG_KSU) += kernelsu.o
-obj-$(CONFIG_KSU_TRACEPOINT_HOOK) += ksu_trace_export.o
 
 obj-$(CONFIG_KPM) += kpm/
-
-ifeq ($(CONFIG_KSU),m)
-ccflags-y += -DKSU_MODULE
-endif
-
 
 REPO_OWNER := SukiSU-Ultra
 REPO_NAME := SukiSU-Ultra
@@ -125,15 +120,13 @@ ccflags-y += -DKSU_MANAGER_PACKAGE=\"$(KSU_MANAGER_PACKAGE)\"
 $(info -- SukiSU Manager package name: $(KSU_MANAGER_PACKAGE))
 endif
 
-ifeq ($(CONFIG_KSU_KPROBES_HOOK), y)
-$(info -- SukiSU: CONFIG_KSU_KPROBES_HOOK)
-ccflags-y += -DCONFIG_KSU_KPROBES_HOOK
-else ifeq ($(CONFIG_KSU_TRACEPOINT_HOOK), y)
-$(info -- SukiSU: CONFIG_KSU_TRACEPOINT_HOOK)
-ccflags-y += -DCONFIG_KSU_TRACEPOINT_HOOK
-else ifeq ($(CONFIG_KSU_MANUAL_HOOK), y)
-$(info -- SukiSU: CONFIG_KSU_MANUAL_HOOK)
-ccflags-y += -DCONFIG_KSU_MANUAL_HOOK
+ifeq ($(CONFIG_KSU_MANUAL_HOOK), y)
+ccflags-y += -DKSU_MANUAL_HOOK
+$(info -- SukiSU: KSU_MANUAL_HOOK Temporarily discontinued）)
+else
+ccflags-y += -DKSU_KPROBES_HOOK
+ccflags-y += -DKSU_TP_HOOK
+$(info -- SukiSU: KSU_TRACEPOINT_HOOK)
 endif
 
 KERNEL_VERSION := $(VERSION).$(PATCHLEVEL)
@@ -166,7 +159,7 @@ ifeq ($(shell grep -q "struct proc_ops " $(srctree)/include/linux/proc_fs.h; ech
 ccflags-y += -DKSU_COMPAT_HAS_PROC_OPS
 endif
 
-ccflags-y += -Wno-implicit-function-declaration -Wno-strict-prototypes -Wno-int-conversion -Wno-gcc-compat
+ccflags-y += -Wno-strict-prototypes -Wno-int-conversion -Wno-gcc-compat -Wno-missing-prototypes
 ccflags-y += -Wno-declaration-after-statement -Wno-unused-function -Wno-unused-variable
 
 all:

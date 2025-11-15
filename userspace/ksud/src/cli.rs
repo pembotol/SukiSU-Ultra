@@ -107,6 +107,10 @@ enum Commands {
         /// KMI version, if specified, will use the specified KMI
         #[arg(long, default_value = None)]
         kmi: Option<String>,
+
+        /// target partition override (init_boot | boot | vendor_boot)
+        #[arg(long, default_value = None)]
+        partition: Option<String>,
     },
 
     /// Restore boot or init_boot images patched by KernelSU
@@ -137,6 +141,12 @@ enum Commands {
         command: kpm_cmd::Kpm,
     },
 
+    /// Manage kernel umount paths
+    Umount {
+        #[command(subcommand)]
+        command: Umount,
+    },
+
     /// For developers
     Debug {
         #[command(subcommand)]
@@ -150,7 +160,23 @@ enum BootInfo {
     CurrentKmi,
 
     /// show supported kmi versions
-    SupportedKmi,
+    SupportedKmis,
+
+    /// check if device is A/B capable
+    IsAbDevice,
+
+    /// show auto-selected boot partition name
+    DefaultPartition,
+
+    /// list available partitions for current or OTA toggled slot
+    AvailablePartitions,
+
+    /// show slot suffix for current or OTA toggled slot
+    SlotSuffix {
+        /// toggle to another slot
+        #[arg(short = 'u', long, default_value = "false")]
+        ota: bool,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -182,6 +208,39 @@ enum Debug {
 
     /// For testing
     Test,
+
+    /// Process mark management
+    Mark {
+        #[command(subcommand)]
+        command: MarkCommand,
+    },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum MarkCommand {
+    /// Get mark status for a process (or all)
+    Get {
+        /// target pid (0 for total count)
+        #[arg(default_value = "0")]
+        pid: i32,
+    },
+
+    /// Mark a process
+    Mark {
+        /// target pid (0 for all processes)
+        #[arg(default_value = "0")]
+        pid: i32,
+    },
+
+    /// Unmark a process
+    Unmark {
+        /// target pid (0 for all processes)
+        #[arg(default_value = "0")]
+        pid: i32,
+    },
+
+    /// Refresh mark for all running processes
+    Refresh,
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -343,6 +402,44 @@ mod kpm_cmd {
     }
 }
 
+#[derive(clap::Subcommand, Debug)]
+enum Umount {
+    /// Add custom umount path
+    Add {
+        /// Mount path to add
+        path: String,
+
+        /// Check mount type (overlay)
+        #[arg(long, default_value = "false")]
+        check_mnt: bool,
+
+        /// Umount flags (0 or 8 for MNT_DETACH)
+        #[arg(long, default_value = "-1")]
+        flags: i32,
+    },
+
+    /// Remove custom umount path
+    Remove {
+        /// Mount path to remove
+        path: String,
+    },
+
+    /// List all umount paths
+    List,
+
+    /// Clear all custom paths (keep defaults)
+    ClearCustom,
+
+    /// Save configuration to file
+    Save,
+
+    /// Load and apply configuration from file
+    Load,
+
+    /// Apply current configuration to kernel
+    Apply,
+}
+
 pub fn run() -> Result<()> {
     #[cfg(target_os = "android")]
     android_logger::init_once(
@@ -429,6 +526,12 @@ pub fn run() -> Result<()> {
             Debug::Su { global_mnt } => crate::su::grant_root(global_mnt),
             Debug::Mount => init_event::mount_modules_systemlessly(),
             Debug::Test => assets::ensure_binaries(false),
+            Debug::Mark { command } => match command {
+                MarkCommand::Get { pid } => debug::mark_get(pid),
+                MarkCommand::Mark { pid } => debug::mark_set(pid),
+                MarkCommand::Unmark { pid } => debug::mark_unset(pid),
+                MarkCommand::Refresh => debug::mark_refresh(),
+            },
         },
 
         Commands::BootPatch {
@@ -441,7 +544,10 @@ pub fn run() -> Result<()> {
             out,
             magiskboot,
             kmi,
-        } => crate::boot_patch::patch(boot, kernel, module, init, ota, flash, out, magiskboot, kmi),
+            partition,
+        } => crate::boot_patch::patch(
+            boot, kernel, module, init, ota, flash, out, magiskboot, kmi, partition,
+        ),
 
         Commands::BootInfo { command } => match command {
             BootInfo::CurrentKmi => {
@@ -450,9 +556,32 @@ pub fn run() -> Result<()> {
                 // return here to avoid printing the error message
                 return Ok(());
             }
-            BootInfo::SupportedKmi => {
+            BootInfo::SupportedKmis => {
                 let kmi = crate::assets::list_supported_kmi()?;
                 kmi.iter().for_each(|kmi| println!("{kmi}"));
+                return Ok(());
+            }
+            BootInfo::IsAbDevice => {
+                let val = crate::utils::getprop("ro.build.ab_update")
+                    .unwrap_or_else(|| String::from("false"));
+                let is_ab = val.trim().to_lowercase() == "true";
+                println!("{}", if is_ab { "true" } else { "false" });
+                return Ok(());
+            }
+            BootInfo::DefaultPartition => {
+                let kmi = crate::boot_patch::get_current_kmi().unwrap_or_else(|_| String::from(""));
+                let name = crate::boot_patch::choose_boot_partition(&kmi, false, &None);
+                println!("{name}");
+                return Ok(());
+            }
+            BootInfo::SlotSuffix { ota } => {
+                let suffix = crate::boot_patch::get_slot_suffix(ota);
+                println!("{suffix}");
+                return Ok(());
+            }
+            BootInfo::AvailablePartitions => {
+                let parts = crate::boot_patch::list_available_partitions();
+                parts.iter().for_each(|p| println!("{p}"));
                 return Ok(());
             }
         },
@@ -480,10 +609,27 @@ pub fn run() -> Result<()> {
                 Kpm::Version => crate::kpm::kpm_version_loader(),
             }
         }
+        Commands::Umount { command } => match command {
+            Umount::Add {
+                path,
+                check_mnt,
+                flags,
+            } => crate::umount_manager::add_umount_path(&path, check_mnt, flags),
+            Umount::Remove { path } => crate::umount_manager::remove_umount_path(&path),
+            Umount::List => crate::umount_manager::list_umount_paths(),
+            Umount::ClearCustom => crate::umount_manager::clear_custom_paths(),
+            Umount::Save => crate::umount_manager::save_umount_config(),
+            Umount::Load => crate::umount_manager::load_and_apply_config(),
+            Umount::Apply => crate::umount_manager::apply_config_to_kernel(),
+        },
     };
 
     if let Err(e) = &result {
-        log::error!("Error: {e:?}");
+        for c in e.chain() {
+            log::error!("{c:#?}");
+        }
+
+        log::error!("{:#?}", e.backtrace());
     }
     result
 }

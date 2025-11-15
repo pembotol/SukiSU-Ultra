@@ -65,7 +65,6 @@
     <string name="require_kernel_version" formatted="false">The current KernelSU version %s is too low for the manager to work properly. Please upgrade to version %s or higher!</string>
     <string name="settings_umount_modules_default">Umount modules by default</string>
     <string name="settings_umount_modules_default_summary">The global default value for \"Umount modules\" in App Profile. If enabled, it will remove all module modifications to the system for apps that don\'t have a profile set</string>
-    <string name="settings_susfs_toggle">Disable kprobes hook</string>
     <string name="profile_umount_modules_summary">Enabling this option will allow KernelSU to restore any modified files by the modules for this app</string>
     <string name="profile_selinux_domain">Domain</string>
     <string name="profile_selinux_rules">Rules</string>
@@ -112,6 +111,7 @@
     <string name="install_inactive_slot">Install to inactive slot (After OTA)</string>
     <string name="install_inactive_slot_warning">Your device will be **FORCED** to boot to the current inactive slot after a reboot!\nOnly use this option after OTA is done.\nContinue?</string>
     <string name="install_next">Next</string>
+    <string name="install_select_partition">Select partition</string>
     <string name="install_upload_lkm_file">Use local LKM file</string>
     <string name="install_only_support_ko_file">Only .ko files are supported</string>
     <string name="select_file_tip">%1$s partition image is recommended</string>
@@ -167,9 +167,14 @@
     <string name="home_device_model">Device model</string>
     <string name="su_not_allowed">Granting superuser to %s is not allowed</string>
     <string name="settings_disable_su">Disable su compatibility</string>
-    <string name="settings_disable_su_summary">Temporarily disable any applications from obtaining root privileges via the ⁠su command (Existing root processes will not be affected)</string>
+    <string name="settings_disable_su_summary">Disable the ability of any app to gain root privileges via the ⁠su command (existing root processes won\'t be affected).</string>
     <string name="settings_disable_kernel_umount">Disable kernel umount</string>
-    <string name="settings_disable_kernel_umount_summary">Temporarily disable kernel-level umount behavior controlled by KernelSU.</string>
+    <string name="settings_disable_kernel_umount_summary">Disable kernel-level umount behavior controlled by KernelSU.</string>
+    <string name="settings_enable_enhanced_security">Enable enhanced security</string>
+    <string name="settings_enable_enhanced_security_summary">Enable stricter security policies.</string>
+    <string name="settings_mode_default">Default</string>
+    <string name="settings_mode_temp_enable">Temporarily enable</string>
+    <string name="settings_mode_always_enable">Permanently enable</string>
     <string name="module_install_multiple_confirm_with_names">Sure you want to install the following %1$d modules? \n\n%2$s</string>
     <string name="more_settings">More settings</string>
     <string name="selinux">SELinux</string>
@@ -194,6 +199,7 @@
     <string name="theme_light">Light</string>
     <string name="theme_dark">Dark</string>
     <string name="manual_hook">Manual Hook</string>
+    <string name="inline_hook">Inline Hook</string>
     <string name="dynamic_color_title">Dynamic colours</string>
     <string name="dynamic_color_summary">Dynamic colours using system themes</string>
     <string name="choose_theme_color">Choose a theme colour</string>
@@ -244,7 +250,6 @@
     <string name="invalid_file_type">Incorrect file type! Please select .kpm file</string>
     <string name="confirm_uninstall_title_with_filename">Uninstall</string>
     <string name="confirm_uninstall_content">The following KPM will be uninstalled: %s</string>
-    <string name="settings_susfs_toggle_summary">Disable kprobes hook created by KernelSU, using inline hooks instead, which is similar to non-GKI kernel hooking method</string>
     <string name="image_editor_hint">Use two fingers to zoom the image, and one finger to drag it to adjust the position</string>
     <string name="reprovision">Reprovision</string>
     <!-- Kernel Flash Progress Related -->
@@ -732,4 +737,27 @@ Important Note:\n
     <string name="incompatible_kernel_msg">
     The current manager is incompatible with this kernel! Please upgrade the kernel to version %2$d or higher (currently %1$d)
     </string>
+    <string name="umount_path_manager">Umount Path Management</string>
+    <string name="umount_path_manager_summary">Manage kernel unmount paths</string>
+    <string name="umount_path_restart_notice">A reboot is required for changes to take effect. The system will apply the new configuration on the next boot.</string>
+    <string name="add_umount_path">Add Umount Path</string>
+    <string name="mount_path">Mount Path</string>
+    <string name="check_mount_type">Check Mount Type</string>
+    <string name="check_mount_type_overlay">Check if it is an overlay type</string>
+    <string name="umount_flags">Unmount Flags</string>
+    <string name="umount_flags_hint">0=Normal unmount, 8=MNT_DETACH, -1=Auto</string>
+    <string name="flags">Flags</string>
+    <string name="default_entry">Default Entry</string>
+    <string name="confirm_delete">Confirm Delete</string>
+    <string name="confirm_delete_umount_path">Are you sure you want to delete the path %s?</string>
+    <string name="umount_path_added">Path added, will take effect after reboot</string>
+    <string name="umount_path_removed">Path removed, will take effect after reboot</string>
+    <string name="operation_failed">Operation failed</string>
+    <string name="confirm_action">Confirm Action</string>
+    <string name="confirm_clear_custom_paths">Are you sure you want to clear all custom paths? (Default paths will be preserved)</string>
+    <string name="custom_paths_cleared">Custom paths cleared</string>
+    <string name="clear_custom_paths">Clear Custom Paths</string>
+    <string name="apply_config">Apply Configuration</string>
+    <string name="config_applied">Configuration applied to kernel</string>
+    <string name="mnt_detach">MNT_DETACH</string>
 </resources>

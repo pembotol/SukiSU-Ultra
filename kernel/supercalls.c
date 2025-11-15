@@ -4,12 +4,17 @@
 #include <linux/capability.h>
 #include <linux/cred.h>
 #include <linux/err.h>
+#include <linux/fdtable.h>
 #include <linux/file.h>
 #include <linux/fs.h>
 #include <linux/slab.h>
+#include <linux/kprobes.h>
+#include <linux/syscalls.h>
+#include <linux/task_work.h>
 #include <linux/uaccess.h>
 #include <linux/version.h>
 
+#include "arch.h"
 #include "allowlist.h"
 #include "feature.h"
 #include "klog.h" // IWYU pragma: keep
@@ -17,21 +22,16 @@
 #include "manager.h"
 #include "sulog.h"
 #include "selinux/selinux.h"
-#include "kernel_compat.h"
+#include "objsec.h"
+#include "file_wrapper.h"
+#include "syscall_hook_manager.h"
 #include "throne_comm.h"
 #include "dynamic_manager.h"
+#include "umount_manager.h"
 
 #ifdef CONFIG_KSU_MANUAL_SU
 #include "manual_su.h"
 #endif
-
-// Forward declarations from core_hook.c
-extern void escape_to_root(void);
-extern void nuke_ext4_sysfs(void);
-extern bool ksu_module_mounted;
-extern int handle_sepolicy(unsigned long arg3, void __user *arg4);
-extern void ksu_sucompat_init(void);
-extern void ksu_sucompat_exit(void);
 
 bool ksu_uid_scanner_enabled = false;
 
@@ -58,7 +58,7 @@ bool always_allow(void)
 
 bool allowed_for_su(void)
 {
-    bool is_allowed = is_manager() || ksu_is_allow_uid(current_uid().val);
+    bool is_allowed = is_manager() || ksu_is_allow_uid_for_current(current_uid().val);
 #if __SULOG_GATE
 	ksu_sulog_report_permission_check(current_uid().val, current->comm, is_allowed);
 #endif
@@ -83,7 +83,7 @@ static int do_grant_root(void __user *arg)
     // we already check uid above on allowed_for_su()
 
     pr_info("allow root for: %d\n", current_uid().val);
-    escape_to_root();
+    escape_with_root_profile();
 
     return 0;
 }
@@ -136,13 +136,13 @@ static int do_report_event(void __user *arg)
         if (!boot_complete_lock) {
             boot_complete_lock = true;
             pr_info("boot_complete triggered\n");
+            on_boot_completed();
         }
         break;
     }
     case EVENT_MODULE_MOUNTED: {
-        ksu_module_mounted = true;
         pr_info("module mounted!\n");
-        nuke_ext4_sysfs();
+        on_module_mounted();
         break;
     }
     default:
@@ -233,7 +233,7 @@ static int do_uid_granted_root(void __user *arg)
         return -EFAULT;
     }
 
-    cmd.granted = ksu_is_allow_uid(cmd.uid);
+    cmd.granted = ksu_is_allow_uid_for_current(cmd.uid);
 
     if (copy_to_user(arg, &cmd, sizeof(cmd))) {
         pr_err("uid_granted_root: copy_to_user failed\n");
@@ -362,6 +362,125 @@ static int do_set_feature(void __user *arg)
     return 0;
 }
 
+static int do_get_wrapper_fd(void __user *arg) {
+    if (!ksu_file_sid) {
+        return -EINVAL;
+    }
+
+    struct ksu_get_wrapper_fd_cmd cmd;
+    int ret;
+
+    if (copy_from_user(&cmd, arg, sizeof(cmd))) {
+        pr_err("get_wrapper_fd: copy_from_user failed\n");
+        return -EFAULT;
+    }
+
+    struct file* f = fget(cmd.fd);
+    if (!f) {
+        return -EBADF;
+    }
+
+    struct ksu_file_wrapper *data = ksu_create_file_wrapper(f);
+    if (data == NULL) {
+        ret = -ENOMEM;
+        goto put_orig_file;
+    }
+
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 12, 0)
+#define getfd_secure anon_inode_create_getfd
+#else
+#define getfd_secure anon_inode_getfd_secure
+#endif
+    ret = getfd_secure("[ksu_fdwrapper]", &data->ops, data, f->f_flags, NULL);
+    if (ret < 0) {
+        pr_err("ksu_fdwrapper: getfd failed: %d\n", ret);
+        goto put_wrapper_data;
+    }
+    struct file* pf = fget(ret);
+
+    struct inode* wrapper_inode = file_inode(pf);
+    // copy original inode mode
+    wrapper_inode->i_mode = file_inode(f)->i_mode;
+    struct inode_security_struct *sec = selinux_inode(wrapper_inode);
+    if (sec) {
+        sec->sid = ksu_file_sid;
+    }
+
+    fput(pf);
+    goto put_orig_file;
+put_wrapper_data:
+    ksu_delete_file_wrapper(data);
+put_orig_file:
+    fput(f);
+
+    return ret;
+}
+
+static int do_manage_mark(void __user *arg)
+{
+    struct ksu_manage_mark_cmd cmd;
+    int ret = 0;
+
+    if (copy_from_user(&cmd, arg, sizeof(cmd))) {
+        pr_err("manage_mark: copy_from_user failed\n");
+        return -EFAULT;
+    }
+
+    switch (cmd.operation) {
+    case KSU_MARK_GET: {
+        // Get task mark status
+        ret = ksu_get_task_mark(cmd.pid);
+        if (ret < 0) {
+            pr_err("manage_mark: get failed for pid %d: %d\n", cmd.pid, ret);
+            return ret;
+        }
+        cmd.result = (u32)ret;
+        break;
+    }
+    case KSU_MARK_MARK: {
+        if (cmd.pid == 0) {
+            ksu_mark_all_process();
+        } else {
+            ret = ksu_set_task_mark(cmd.pid, true);
+            if (ret < 0) {
+                pr_err("manage_mark: set_mark failed for pid %d: %d\n", cmd.pid,
+                       ret);
+                return ret;
+            }
+        }
+        break;
+    }
+    case KSU_MARK_UNMARK: {
+        if (cmd.pid == 0) {
+            ksu_unmark_all_process();
+        } else {
+            ret = ksu_set_task_mark(cmd.pid, false);
+            if (ret < 0) {
+                pr_err("manage_mark: set_unmark failed for pid %d: %d\n",
+                       cmd.pid, ret);
+                return ret;
+            }
+        }
+        break;
+    }
+    case KSU_MARK_REFRESH: {
+        ksu_mark_running_process();
+        pr_info("manage_mark: refreshed running processes\n");
+        break;
+    }
+    default: {
+        pr_err("manage_mark: invalid operation %u\n", cmd.operation);
+        return -EINVAL;
+    }
+    }
+    if (copy_to_user(arg, &cmd, sizeof(cmd))) {
+        pr_err("manage_mark: copy_to_user failed\n");
+        return -EFAULT;
+    }
+
+    return 0;
+}
+
 // 100. GET_FULL_VERSION - Get full version string
 static int do_get_full_version(void __user *arg)
 {
@@ -385,13 +504,12 @@ static int do_get_full_version(void __user *arg)
 static int do_get_hook_type(void __user *arg)
 {
     struct ksu_hook_type_cmd cmd = {0};
-    const char *type = "Kprobes";
+    const char *type = "Tracepoint";
 
-#if defined(CONFIG_KSU_TRACEPOINT_HOOK)
-    type = "Tracepoint";
-#elif defined(CONFIG_KSU_MANUAL_HOOK)
+#if defined(KSU_MANUAL_HOOK)
     type = "Manual";
 #endif
+
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 13, 0)
     strscpy(cmd.hook_type, type, sizeof(cmd.hook_type));
 #else
@@ -481,7 +599,7 @@ static int do_enable_uid_scanner(void __user *arg)
             bool enabled = cmd.enabled;
 
             if (enabled == ksu_uid_scanner_enabled) {
-                pr_info("enable_uid_scanner: no need to change, already %s\n", 
+                pr_info("enable_uid_scanner: no need to change, already %s\n",
                     enabled ? "enabled" : "disabled");
                 break;
             }
@@ -520,6 +638,78 @@ static int do_enable_uid_scanner(void __user *arg)
     return 0;
 }
 
+#ifdef CONFIG_KSU_MANUAL_SU
+static bool system_uid_check(void)
+{
+    return current_uid().val <= 2000;
+}
+
+static int do_manual_su(void __user *arg)
+{
+    struct ksu_manual_su_cmd cmd;
+    struct manual_su_request request;
+    int res;
+
+    if (copy_from_user(&cmd, arg, sizeof(cmd))) {
+        pr_err("manual_su: copy_from_user failed\n");
+        return -EFAULT;
+    }
+
+    pr_info("manual_su request, option=%d, uid=%d, pid=%d\n",
+            cmd.option, cmd.target_uid, cmd.target_pid);
+
+    memset(&request, 0, sizeof(request));
+    request.target_uid = cmd.target_uid;
+    request.target_pid = cmd.target_pid;
+
+    if (cmd.option == MANUAL_SU_OP_GENERATE_TOKEN ||
+        cmd.option == MANUAL_SU_OP_ESCALATE) {
+        memcpy(request.token_buffer, cmd.token_buffer, sizeof(request.token_buffer));
+    }
+
+    res = ksu_handle_manual_su_request(cmd.option, &request);
+
+    if (cmd.option == MANUAL_SU_OP_GENERATE_TOKEN && res == 0) {
+        memcpy(cmd.token_buffer, request.token_buffer, sizeof(cmd.token_buffer));
+        if (copy_to_user(arg, &cmd, sizeof(cmd))) {
+            pr_err("manual_su: copy_to_user failed\n");
+            return -EFAULT;
+        }
+    }
+
+    return res;
+}
+#endif
+
+static int do_umount_manager(void __user *arg)
+{
+    struct ksu_umount_manager_cmd cmd;
+
+    if (copy_from_user(&cmd, arg, sizeof(cmd))) {
+        pr_err("umount_manager: copy_from_user failed\n");
+        return -EFAULT;
+    }
+
+    switch (cmd.operation) {
+    case UMOUNT_OP_ADD: {
+        return ksu_umount_manager_add(cmd.path, cmd.check_mnt, cmd.flags, false);
+    }
+    case UMOUNT_OP_REMOVE: {
+        return ksu_umount_manager_remove(cmd.path);
+    }
+    case UMOUNT_OP_LIST: {
+        struct ksu_umount_entry_info __user *entries = 
+            (struct ksu_umount_entry_info __user *)cmd.entries_ptr;
+        return ksu_umount_manager_get_entries(entries, &cmd.count);
+    }
+    case UMOUNT_OP_CLEAR_CUSTOM: {
+        return ksu_umount_manager_clear_custom();
+    }
+    default:
+        return -EINVAL;
+    }
+}
+
 // IOCTL handlers mapping table
 static const struct ksu_ioctl_cmd_map ksu_ioctl_handlers[] = {
     { .cmd = KSU_IOCTL_GRANT_ROOT, .name = "GRANT_ROOT", .handler = do_grant_root, .perm_check = allowed_for_su },
@@ -536,17 +726,99 @@ static const struct ksu_ioctl_cmd_map ksu_ioctl_handlers[] = {
     { .cmd = KSU_IOCTL_SET_APP_PROFILE, .name = "SET_APP_PROFILE", .handler = do_set_app_profile, .perm_check = only_manager },
     { .cmd = KSU_IOCTL_GET_FEATURE, .name = "GET_FEATURE", .handler = do_get_feature, .perm_check = manager_or_root },
     { .cmd = KSU_IOCTL_SET_FEATURE, .name = "SET_FEATURE", .handler = do_set_feature, .perm_check = manager_or_root },
+    { .cmd = KSU_IOCTL_GET_WRAPPER_FD, .name = "GET_WRAPPER_FD", .handler = do_get_wrapper_fd, .perm_check = manager_or_root },
+    { .cmd = KSU_IOCTL_MANAGE_MARK, .name = "MANAGE_MARK", .handler = do_manage_mark, .perm_check = manager_or_root },
     { .cmd = KSU_IOCTL_GET_FULL_VERSION,.name = "GET_FULL_VERSION", .handler = do_get_full_version, .perm_check = always_allow},
     { .cmd = KSU_IOCTL_HOOK_TYPE,.name = "GET_HOOK_TYPE", .handler = do_get_hook_type, .perm_check = manager_or_root},
     { .cmd = KSU_IOCTL_ENABLE_KPM, .name = "GET_ENABLE_KPM", .handler = do_enable_kpm, .perm_check = manager_or_root},
     { .cmd = KSU_IOCTL_DYNAMIC_MANAGER, .name = "SET_DYNAMIC_MANAGER", .handler = do_dynamic_manager, .perm_check = manager_or_root},
     { .cmd = KSU_IOCTL_GET_MANAGERS, .name = "GET_MANAGERS", .handler = do_get_managers, .perm_check = manager_or_root},
     { .cmd = KSU_IOCTL_ENABLE_UID_SCANNER, .name = "SET_ENABLE_UID_SCANNER", .handler = do_enable_uid_scanner, .perm_check = manager_or_root},
+#ifdef CONFIG_KSU_MANUAL_SU
+    { .cmd = KSU_IOCTL_MANUAL_SU, .name = "MANUAL_SU", .handler = do_manual_su, .perm_check = system_uid_check},
+#endif
 #ifdef CONFIG_KPM
     { .cmd = KSU_IOCTL_KPM, .name = "KPM_OPERATION", .handler = do_kpm, .perm_check = manager_or_root},
 #endif
+    { .cmd = KSU_IOCTL_UMOUNT_MANAGER, .name = "UMOUNT_MANAGER", .handler = do_umount_manager, .perm_check = manager_or_root},
     { .cmd = 0, .name = NULL, .handler = NULL, .perm_check = NULL} // Sentine
 };
+
+struct ksu_install_fd_tw {
+    struct callback_head cb;
+    int __user *outp;
+};
+
+static void ksu_install_fd_tw_func(struct callback_head *cb)
+{
+    struct ksu_install_fd_tw *tw = container_of(cb, struct ksu_install_fd_tw, cb);
+    int fd = ksu_install_fd();
+    pr_info("[%d] install ksu fd: %d\n", current->pid, fd);
+
+    if (copy_to_user(tw->outp, &fd, sizeof(fd))) {
+        pr_err("install ksu fd reply err\n");
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 11, 0)
+        close_fd(fd);
+#else
+        ksys_close(fd);
+#endif
+    }
+
+    kfree(tw);
+}
+
+// downstream: make sure to pass arg as reference, this can allow us to extend things.
+int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg)
+{
+    struct ksu_install_fd_tw *tw;
+
+    if (magic1 != KSU_INSTALL_MAGIC1)
+        return 0;
+
+#ifdef CONFIG_KSU_DEBUG
+    pr_info("sys_reboot: intercepted call! magic: 0x%x id: %d\n", magic1, magic2);
+#endif
+
+    // Check if this is a request to install KSU fd
+    if (magic2 == KSU_INSTALL_MAGIC2) {
+        tw = kzalloc(sizeof(*tw), GFP_ATOMIC);
+        if (!tw)
+            return 0;
+
+        tw->outp = (int __user *)*arg;
+        tw->cb.func = ksu_install_fd_tw_func;
+
+        if (task_work_add(current, &tw->cb, TWA_RESUME)) {
+            kfree(tw);
+            pr_warn("install fd add task_work failed\n");
+        }
+
+        return 0;
+    }
+
+    // extensions
+
+    return 0;
+}
+
+#ifdef KSU_KPROBES_HOOK
+// Reboot hook for installing fd
+static int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs)
+{
+    struct pt_regs *real_regs = PT_REAL_REGS(regs);
+    int magic1 = (int)PT_REGS_PARM1(real_regs);
+    int magic2 = (int)PT_REGS_PARM2(real_regs);
+    int cmd = (int)PT_REGS_PARM3(real_regs);
+    void __user **arg = (void __user **)&PT_REGS_SYSCALL_PARM4(real_regs);
+
+    return ksu_handle_sys_reboot(magic1, magic2, cmd, arg);
+}
+
+static struct kprobe reboot_kp = {
+    .symbol_name = REBOOT_SYMBOL,
+    .pre_handler = reboot_handler_pre,
+};
+#endif
 
 void ksu_supercalls_init(void)
 {
@@ -556,6 +828,20 @@ void ksu_supercalls_init(void)
     for (i = 0; ksu_ioctl_handlers[i].handler; i++) {
         pr_info("  %-18s = 0x%08x\n", ksu_ioctl_handlers[i].name, ksu_ioctl_handlers[i].cmd);
     }
+#ifdef KSU_KPROBES_HOOK
+    int rc = register_kprobe(&reboot_kp);
+    if (rc) {
+        pr_err("reboot kprobe failed: %d\n", rc);
+    } else {
+        pr_info("reboot kprobe registered successfully\n");
+    }
+#endif
+}
+
+void ksu_supercalls_exit(void) {
+#ifdef KSU_KPROBES_HOOK
+    unregister_kprobe(&reboot_kp);
+#endif
 }
 
 static inline void ksu_ioctl_audit(unsigned int cmd, const char *cmd_name, uid_t uid, int ret)

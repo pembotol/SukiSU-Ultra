@@ -255,6 +255,7 @@ fun installBoot(
     bootUri: Uri?,
     lkm: LkmSelection,
     ota: Boolean,
+    partition: String?,
     onFinish: (Boolean, Int) -> Unit,
     onStdout: (String) -> Unit,
     onStderr: (String) -> Unit,
@@ -314,6 +315,10 @@ fun installBoot(
         Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
     cmd += " -o $downloadsDir"
 
+    partition?.let { part ->
+        cmd += " --partition $part"
+    }
+
     val result = flashWithIO("${getKsuDaemonPath()} $cmd", onStdout, onStderr)
     Log.i("KernelSU", "install boot result: ${result.isSuccess}")
 
@@ -322,6 +327,11 @@ fun installBoot(
 
     // if boot uri is empty, it is direct install, when success, we should show reboot button
     onFinish(bootUri == null && result.isSuccess, result.code)
+
+    if (bootUri == null && result.isSuccess) {
+        install()
+    }
+
     return result.isSuccess
 }
 
@@ -339,18 +349,6 @@ fun rootAvailable(): Boolean {
     return shell.isRoot
 }
 
-fun isAbDevice(): Boolean {
-    val shell = getRootShell()
-    return ShellUtils.fastCmd(shell, "getprop ro.build.ab_update").trim().toBoolean()
-}
-
-fun isInitBoot(): Boolean {
-    val shell = getRootShell();
-    if (shell.isRoot) {
-        return SuFile("/dev/block/by-name/init_boot").exists() || SuFile("/dev/block/by-name/init_boot_a").exists()
-    }
-    return !Os.uname().release.contains("android12-")
-}
 
 suspend fun getCurrentKmi(): String = withContext(Dispatchers.IO) {
     val shell = getRootShell()
@@ -360,7 +358,40 @@ suspend fun getCurrentKmi(): String = withContext(Dispatchers.IO) {
 
 suspend fun getSupportedKmis(): List<String> = withContext(Dispatchers.IO) {
     val shell = getRootShell()
-    val cmd = "boot-info supported-kmi"
+    val cmd = "boot-info supported-kmis"
+    val out = shell.newJob().add("${getKsuDaemonPath()} $cmd").to(ArrayList(), null).exec().out
+    out.filter { it.isNotBlank() }.map { it.trim() }
+}
+
+suspend fun isAbDevice(): Boolean = withContext(Dispatchers.IO) {
+    val shell = getRootShell()
+    val cmd = "boot-info is-ab-device"
+    ShellUtils.fastCmd(shell, "${getKsuDaemonPath()} $cmd").trim().toBoolean()
+}
+
+suspend fun getDefaultPartition(): String = withContext(Dispatchers.IO) {
+    val shell = getRootShell()
+    if (shell.isRoot) {
+        val cmd = "boot-info default-partition"
+        ShellUtils.fastCmd(shell, "${getKsuDaemonPath()} $cmd").trim()
+    } else {
+        if (!Os.uname().release.contains("android12-")) "init_boot" else "boot"
+    }
+}
+
+suspend fun getSlotSuffix(ota: Boolean): String = withContext(Dispatchers.IO) {
+    val shell = getRootShell()
+    val cmd = if (ota) {
+        "boot-info slot-suffix --ota"
+    } else {
+        "boot-info slot-suffix"
+    }
+    ShellUtils.fastCmd(shell, "${getKsuDaemonPath()} $cmd").trim()
+}
+
+suspend fun getAvailablePartitions(): List<String> = withContext(Dispatchers.IO) {
+    val shell = getRootShell()
+    val cmd = "boot-info available-partitions"
     val out = shell.newJob().add("${getKsuDaemonPath()} $cmd").to(ArrayList(), null).exec().out
     out.filter { it.isNotBlank() }.map { it.trim() }
 }
@@ -511,49 +542,25 @@ fun restartApp(packageName: String) {
 }
 
 fun getSuSFSDaemonPath(): String {
-    return ksuApp.applicationInfo.nativeLibraryDir + File.separator + "libsusfsd.so"
-}
-
-fun getSuSFS(): String {
-    val shell = getRootShell()
-    val result = ShellUtils.fastCmd(shell, "${getSuSFSDaemonPath()} support")
-    return result
+    return ksuApp.applicationInfo.nativeLibraryDir + File.separator + "libksu_susfs.so"
 }
 
 fun getSuSFSVersion(): String {
     val shell = getRootShell()
-    val result = ShellUtils.fastCmd(shell, "${getSuSFSDaemonPath()} version")
+    val result = ShellUtils.fastCmd(shell, "${getSuSFSDaemonPath()} show version")
     return result
 }
 
 fun getSuSFSVariant(): String {
     val shell = getRootShell()
-    val result = ShellUtils.fastCmd(shell, "${getSuSFSDaemonPath()} variant")
+    val result = ShellUtils.fastCmd(shell, "${getSuSFSDaemonPath()} show variant")
     return result
 }
 
 fun getSuSFSFeatures(): String {
     val shell = getRootShell()
-    val cmd = "${getSuSFSDaemonPath()} features"
+    val cmd = "${getSuSFSDaemonPath()} show enabled_features"
     return runCmd(shell, cmd)
-}
-
-fun susfsSUS_SU_0(): String {
-    val shell = getRootShell()
-    val result = ShellUtils.fastCmd(shell, "${getSuSFSDaemonPath()} sus_su 0")
-    return result
-}
-
-fun susfsSUS_SU_2(): String {
-    val shell = getRootShell()
-    val result = ShellUtils.fastCmd(shell, "${getSuSFSDaemonPath()} sus_su 2")
-    return result
-}
-
-fun susfsSUS_SU_Mode(): String {
-    val shell = getRootShell()
-    val result = ShellUtils.fastCmd(shell, "${getSuSFSDaemonPath()} sus_su mode")
-    return result
 }
 
 fun getZygiskImplement(): String {
@@ -664,4 +671,57 @@ fun readUidScannerFile(): Boolean {
     } catch (_: Exception) {
          false
     }
+}
+
+fun addUmountPath(path: String, checkMnt: Boolean, flags: Int): Boolean {
+    val shell = getRootShell()
+    val checkMntFlag = if (checkMnt) "--check-mnt" else ""
+    val flagsArg = if (flags >= 0) "--flags $flags" else ""
+    val cmd = "${getKsuDaemonPath()} umount add $path $checkMntFlag $flagsArg"
+    val result = ShellUtils.fastCmdResult(shell, cmd)
+    Log.i(TAG, "add umount path $path result: $result")
+    return result
+}
+
+fun removeUmountPath(path: String): Boolean {
+    val shell = getRootShell()
+    val cmd = "${getKsuDaemonPath()} umount remove $path"
+    val result = ShellUtils.fastCmdResult(shell, cmd)
+    Log.i(TAG, "remove umount path $path result: $result")
+    return result
+}
+
+fun listUmountPaths(): String {
+    val shell = getRootShell()
+    val cmd = "${getKsuDaemonPath()} umount list"
+    return try {
+        runCmd(shell, cmd).trim()
+    } catch (e: Exception) {
+        Log.e(TAG, "Failed to list umount paths", e)
+        ""
+    }
+}
+
+fun clearCustomUmountPaths(): Boolean {
+    val shell = getRootShell()
+    val cmd = "${getKsuDaemonPath()} umount clear-custom"
+    val result = ShellUtils.fastCmdResult(shell, cmd)
+    Log.i(TAG, "clear custom umount paths result: $result")
+    return result
+}
+
+fun saveUmountConfig(): Boolean {
+    val shell = getRootShell()
+    val cmd = "${getKsuDaemonPath()} umount save"
+    val result = ShellUtils.fastCmdResult(shell, cmd)
+    Log.i(TAG, "save umount config result: $result")
+    return result
+}
+
+fun applyUmountConfigToKernel(): Boolean {
+    val shell = getRootShell()
+    val cmd = "${getKsuDaemonPath()} umount apply"
+    val result = ShellUtils.fastCmdResult(shell, cmd)
+    Log.i(TAG, "apply umount config to kernel result: $result")
+    return result
 }

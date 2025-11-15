@@ -20,7 +20,6 @@ object Natives {
     const val MINIMAL_SUPPORTED_KERNEL = 12143
 
     // 12040: Support disable sucompat mode
-    const val MINIMAL_SUPPORTED_SU_COMPAT = 12040
     const val KERNEL_SU_DOMAIN = "u:r:su:s0"
 
     const val MINIMAL_SUPPORTED_KERNEL_FULL = "v3.1.8"
@@ -109,6 +108,15 @@ object Natives {
      */
     external fun isKernelUmountEnabled(): Boolean
     external fun setKernelUmountEnabled(enabled: Boolean): Boolean
+
+    /**
+     * Enhanced security can be enabled/disabled.
+     *  0: disabled
+     *  1: enabled
+     *  negative : error
+     */
+    external fun isEnhancedSecurityEnabled(): Boolean
+    external fun setEnhancedSecurityEnabled(enabled: Boolean): Boolean
 
     external fun isKPMEnabled(): Boolean
     external fun getHookType(): String

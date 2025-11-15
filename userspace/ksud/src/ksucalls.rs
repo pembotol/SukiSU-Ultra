@@ -15,8 +15,8 @@ const KSU_IOCTL_SET_SEPOLICY: u32 = 0xc0004b04; // _IOC(_IOC_READ|_IOC_WRITE, 'K
 const KSU_IOCTL_CHECK_SAFEMODE: u32 = 0x80004b05; // _IOC(_IOC_READ, 'K', 5, 0)
 const KSU_IOCTL_GET_FEATURE: u32 = 0xc0004b0d; // _IOC(_IOC_READ|_IOC_WRITE, 'K', 13, 0)
 const KSU_IOCTL_SET_FEATURE: u32 = 0x40004b0e; // _IOC(_IOC_WRITE, 'K', 14, 0)
-#[allow(dead_code)]
-const KSU_IOCTL_KPM: u32 = 0xc0004bc8; // _IOC(_IOC_READ|_IOC_WRITE, 'K', 200, 0)
+const KSU_IOCTL_GET_WRAPPER_FD: u32 = 0x40004b0f; // _IOC(_IOC_WRITE, 'K', 15, 0)
+const KSU_IOCTL_MANAGE_MARK: u32 = 0xc0004b10; // _IOC(_IOC_READ|_IOC_WRITE, 'K', 16, 0)
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -57,6 +57,27 @@ struct SetFeatureCmd {
     feature_id: u32,
     value: u64,
 }
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct GetWrapperFdCmd {
+    fd: i32,
+    flags: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct ManageMarkCmd {
+    operation: u32,
+    pid: i32,
+    result: u32,
+}
+
+// Mark operation constants
+const KSU_MARK_GET: u32 = 1;
+const KSU_MARK_MARK: u32 = 2;
+const KSU_MARK_UNMARK: u32 = 3;
+const KSU_MARK_REFRESH: u32 = 4;
 
 // Global driver fd cache
 #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -109,7 +130,7 @@ fn init_driver_fd() -> Option<RawFd> {
 
 // ioctl wrapper using libc
 #[cfg(any(target_os = "linux", target_os = "android"))]
-fn ksuctl<T>(request: u32, arg: *mut T) -> std::io::Result<i32> {
+pub fn ksuctl<T>(request: u32, arg: *mut T) -> std::io::Result<i32> {
     use std::io;
 
     let fd = *DRIVER_FD.get_or_init(|| init_driver_fd().unwrap_or(-1));
@@ -223,18 +244,53 @@ pub fn set_feature(feature_id: u32, value: u64) -> std::io::Result<()> {
     Ok(())
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-#[allow(dead_code)]
-pub struct KsuKpmCmd {
-    pub arg2: u64,
-    pub arg3: u64,
-    pub arg4: u64,
-    pub arg5: u64,
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub fn get_wrapped_fd(fd: RawFd) -> std::io::Result<RawFd> {
+    let mut cmd = GetWrapperFdCmd { fd, flags: 0 };
+    let result = ksuctl(KSU_IOCTL_GET_WRAPPER_FD, &mut cmd as *mut _)?;
+    Ok(result)
 }
 
-#[allow(dead_code)]
-pub fn kpm_ioctl(cmd: &mut KsuKpmCmd) -> std::io::Result<()> {
-    ksuctl(KSU_IOCTL_KPM, cmd as *mut _)?;
+/// Get mark status for a process (pid=0 returns total marked count)
+pub fn mark_get(pid: i32) -> std::io::Result<u32> {
+    let mut cmd = ManageMarkCmd {
+        operation: KSU_MARK_GET,
+        pid,
+        result: 0,
+    };
+    ksuctl(KSU_IOCTL_MANAGE_MARK, &mut cmd as *mut _)?;
+    Ok(cmd.result)
+}
+
+/// Mark a process (pid=0 marks all processes)
+pub fn mark_set(pid: i32) -> std::io::Result<()> {
+    let mut cmd = ManageMarkCmd {
+        operation: KSU_MARK_MARK,
+        pid,
+        result: 0,
+    };
+    ksuctl(KSU_IOCTL_MANAGE_MARK, &mut cmd as *mut _)?;
+    Ok(())
+}
+
+/// Unmark a process (pid=0 unmarks all processes)
+pub fn mark_unset(pid: i32) -> std::io::Result<()> {
+    let mut cmd = ManageMarkCmd {
+        operation: KSU_MARK_UNMARK,
+        pid,
+        result: 0,
+    };
+    ksuctl(KSU_IOCTL_MANAGE_MARK, &mut cmd as *mut _)?;
+    Ok(())
+}
+
+/// Refresh mark for all running processes
+pub fn mark_refresh() -> std::io::Result<()> {
+    let mut cmd = ManageMarkCmd {
+        operation: KSU_MARK_REFRESH,
+        pid: 0,
+        result: 0,
+    };
+    ksuctl(KSU_IOCTL_MANAGE_MARK, &mut cmd as *mut _)?;
     Ok(())
 }
